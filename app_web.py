@@ -2,13 +2,16 @@ import streamlit as st
 import datetime
 from datetime import timedelta
 import pandas as pd
+from streamlit_gsheets import GSheetsConnection
 
 # --- CONFIGURATION PAGE WEB ---
 st.set_page_config(page_title="DFM Europe - Pointeuse Web", page_icon="🕒", layout="wide")
 
 CONTRAT_H_JOUR = 7.0
+WORKSHEET_NAME = "Pointages"  # ⚠️ Doit être le nom exact de votre onglet dans Google Sheet
 
 def calculate_worked_hours(arrival_str, departure_str, break_hours):
+    """Calcule la durée travaillée et les heures supplémentaires."""
     if not arrival_str or not departure_str:
         return 0.0, 0.0
     try:
@@ -25,30 +28,38 @@ def calculate_worked_hours(arrival_str, departure_str, break_hours):
     except Exception:
         return 0.0, 0.0
 
-st.title("🕒 DFM Europe - Pointeuse de Travail")
-st.caption("Chef de projet IoT - Saisie Rapide Hebdomadaire")
+st.title("🕒 DFM Europe - Pointeuse Web")
+st.caption("Chef de projet IoT - Saisie Rapide & Synchronisation Google Sheets")
 
-# --- NAVIGATION BARRE LATÉRALE ---
-menu = st.sidebar.radio("Navigation", ["⚡ Saisie Semaine", "📊 Historique", "📂 Import Google Sheets"])
+# --- CONNEXION GOOGLE SHEETS ---
+try:
+    conn = st.connection("gsheets", type=GSheetsConnection)
+except Exception as e:
+    st.error(f"❌ Erreur de connexion à Google Sheets. Vérifiez vos Secrets Streamlit.\nDétail : {e}")
+    st.stop()
+
+# Barre latérale
+menu = st.sidebar.radio("Navigation", ["⚡ Saisie Semaine", "📊 Historique & Compteurs"])
 
 if menu == "⚡ Saisie Semaine":
-    st.subheader("Saisie rapide du Lundi au Vendredi")
+    st.subheader("⚡ Saisie rapide du Lundi au Vendredi")
     
     today = datetime.date.today()
     monday = today - timedelta(days=today.weekday())
-    
     days = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi"]
-    data_list = []
     
     with st.form("form_semaine"):
-        cols = st.columns([1.5, 2, 2, 2, 1.5, 3])
-        cols[0].write("**Jour**")
-        cols[1].write("**Date**")
-        cols[2].write("**Arrivée**")
-        cols[3].write("**Départ**")
-        cols[4].write("**Pause (h)**")
-        cols[5].write("**Commentaire**")
+        st.write("Ajustez vos horaires si nécessaire puis validez :")
         
+        cols_hdr = st.columns([1.5, 2, 2, 2, 1.5, 3])
+        cols_hdr[0].write("**Jour**")
+        cols_hdr[1].write("**Date**")
+        cols_hdr[2].write("**Arrivée**")
+        cols_hdr[3].write("**Départ**")
+        cols_hdr[4].write("**Pause (h)**")
+        cols_hdr[5].write("**Commentaire**")
+        
+        entries = []
         for i, day_name in enumerate(days):
             d_date = monday + timedelta(days=i)
             c = st.columns([1.5, 2, 2, 2, 1.5, 3])
@@ -64,22 +75,57 @@ if menu == "⚡ Saisie Semaine":
             dep_str = dep.strftime("%H:%M")
             worked, overtime = calculate_worked_hours(arr_str, dep_str, pause)
             
-            data_list.append({
+            entries.append({
                 "Date": dt.strftime("%Y-%m-%d"),
-                "Arrivée": arr_str,
-                "Départ": dep_str,
-                "Pause": pause,
+                "Heure Arrivée": arr_str,
+                "Heure Départ": dep_str,
+                "Pause (H)": pause,
                 "Durée Travaillée": worked,
                 "H. Supp": overtime,
                 "Commentaire": com
             })
             
-        submitted = st.form_submit_button("💾 Enregistrer la semaine", use_container_width=True)
+        submitted = st.form_submit_button("💾 Enregistrer la semaine dans Google Sheets")
+        
         if submitted:
-            df = pd.DataFrame(data_list)
-            st.success("✅ Semaine enregistrée avec succès !")
-            st.dataframe(df, use_container_width=True)
+            try:
+                # Lecture des données existantes
+                try:
+                    existing_df = conn.read(worksheet=WORKSHEET_NAME, ttl="0")
+                except Exception:
+                    existing_df = pd.DataFrame()
 
-elif menu == "📊 Historique":
-    st.subheader("Récapitulatif des heures")
-    st.info("Ici s'affichera le récapitulatif directement lié à votre base de données Google Sheets.")
+                new_df = pd.DataFrame(entries)
+                
+                if existing_df is None or existing_df.empty:
+                    updated_df = new_df
+                else:
+                    dates_to_add = set(new_df["Date"].astype(str))
+                    if "Date" in existing_df.columns:
+                        existing_df = existing_df[~existing_df["Date"].astype(str).isin(dates_to_add)]
+                    updated_df = pd.concat([existing_df, new_df], ignore_index=True)
+                
+                # Mise à jour sur Google Sheets
+                conn.update(worksheet=WORKSHEET_NAME, data=updated_df)
+                st.success("✅ Semaine enregistrée avec succès dans Google Sheets !")
+                st.dataframe(new_df)
+            except Exception as e:
+                st.error(f"❌ Erreur lors de l'enregistrement dans Google Sheets :\n{e}")
+
+elif menu == "📊 Historique & Compteurs":
+    st.subheader("📊 Registre complet des Pointages")
+    try:
+        df = conn.read(worksheet=WORKSHEET_NAME, ttl="0")
+        if df is not None and not df.empty:
+            st.dataframe(df)
+            
+            col1, col2 = st.columns(2)
+            total_worked = pd.to_numeric(df.get("Durée Travaillée", 0), errors='coerce').sum()
+            total_overtime = pd.to_numeric(df.get("H. Supp", 0), errors='coerce').sum()
+            
+            col1.metric("Total Heures Travaillées", f"{total_worked:.2f} h")
+            col2.metric("Total Heures Supplémentaires", f"{total_overtime:.2f} h")
+        else:
+            st.info("Aucun pointage trouvé dans l'onglet 'Pointages'.")
+    except Exception as e:
+        st.error(f"Impossible de lire le Google Sheet : {e}")
