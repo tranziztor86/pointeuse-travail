@@ -1,36 +1,8 @@
 import streamlit as st
 import datetime
 from datetime import timedelta
-from zoneinfo import ZoneInfo  # <--- Ajout pour la gestion du fuseau horaire
 import pandas as pd
 from streamlit_gsheets import GSheetsConnection
-
-# Fuseau horaire France (gestion automatique heure d'été / hiver)
-TZ_PARIS = ZoneInfo("Europe/Paris")
-
-# ... (reste des fonctions inchangé) ...
-
-# ==============================================================================
-# MENU 1 : SAISIE & POINTAGE RAPIDE (SYNCHRONISÉ)
-# ==============================================================================
-if menu == "⚡ Saisie & Pointage Rapide":
-    st.subheader("⏱️ Pointage Rapide en Direct (1-Clic)")
-    
-    # Prise en compte de l'heure française
-    now_paris = datetime.datetime.now(TZ_PARIS)
-    today = now_paris.date()
-    now_str = now_paris.strftime("%H:%M")
-    today_str = today.strftime("%Y-%m-%d")
-    
-    # 1. Charger l'historique existant depuis Google Sheets pour synchroniser
-    try:
-        df_existing = conn.read(worksheet=WS_POINTAGES, ttl="0")
-        if df_existing is None:
-            df_existing = pd.DataFrame()
-    except Exception:
-        df_existing = pd.DataFrame()
-
-    # ... (le reste du code de pointage reste identique) ...
 
 # --- CONFIGURATION PAGE WEB ---
 st.set_page_config(page_title="DFM Europe - Pointeuse & Congés", page_icon="🕒", layout="wide")
@@ -314,7 +286,7 @@ elif menu == "📊 Historique & Compteurs":
             {"Indicateur": "Total H.SUP Acquises", "Valeur": tot_overtime_gained},
             {"Indicateur": "Total H.SUP Récupérées", "Valeur": tot_overtime_used},
             {"Indicateur": "SOLDE NET H.SUP", "Valeur": solde_h_sup},
-            {"Indicateur": "Dernière MAJ", "Valeur": datetime.datetime.now(TZ_PARIS).strftime("%Y-%m-%d %H:%M")}
+            {"Indicateur": "Dernière MAJ", "Valeur": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")}
         ])
         try:
             conn.update(worksheet=WS_COMPTEURS, data=df_compteurs_update)
