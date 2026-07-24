@@ -59,7 +59,7 @@ def calculate_earned_cp(start_ref_date, today_date, rate_per_month=2.0833):
     return round(months * rate_per_month, 2)
 
 def calculate_worked_hours(arrival_str, departure_str, break_hours):
-    if not arrival_str or not departure_str:
+    if not arrival_str or not departure_str or arrival_str == "00:00" or departure_str == "00:00":
         return 0.0, 0.0
     try:
         h1, m1 = map(int, str(arrival_str).split(':'))
@@ -75,6 +75,16 @@ def calculate_worked_hours(arrival_str, departure_str, break_hours):
     except Exception:
         return 0.0, 0.0
 
+def str_to_time(time_str, default_time):
+    """Convertit une chaîne 'HH:MM' en objet datetime.time de manière sécurisée."""
+    try:
+        if not time_str or pd.isna(time_str) or str(time_str).strip() in ["", "None", "nan"]:
+            return default_time
+        parts = str(time_str).strip().split(":")
+        return datetime.time(int(parts[0]), int(parts[1]))
+    except Exception:
+        return default_time
+
 st.title("🕒 DFM Europe - Pointeuse & Suivi des Congés")
 
 # --- CONNEXION GOOGLE SHEETS ---
@@ -84,7 +94,7 @@ except Exception as e:
     st.error(f"❌ Erreur de connexion à Google Sheets : {e}")
     st.stop()
 
-# --- LECTURE/ECRITURE DES COMPTEURS DANS GOOGLE SHEETS ---
+# --- LECTURE COMPTEURS ---
 def get_compteurs():
     try:
         df = conn.read(worksheet=WS_COMPTEURS, ttl="0")
@@ -99,7 +109,7 @@ compteurs_saved = get_compteurs()
 # --- MENU LATÉRAL ---
 menu = st.sidebar.radio(
     "Navigation", 
-    ["⚡ Saisie Semaine", "🌴 Congés & Récupérations", "📊 Historique & Compteurs", "✉️ Informer mon Chef"]
+    ["⚡ Saisie & Pointage Rapide", "🌴 Congés & Récupérations", "📊 Historique & Compteurs", "✉️ Informer mon Chef"]
 )
 
 st.sidebar.markdown("---")
@@ -110,31 +120,123 @@ mode_cp = st.sidebar.selectbox(
     index=0 if "25" in str(compteurs_saved.get("Mode CP", "25")) else 1
 )
 cp_rate = 2.0833 if "25" in mode_cp else 2.5
+cp_initial_stock = st.sidebar.number_input("Solde CP initial (Report N-1)", min_value=0.0, value=float(compteurs_saved.get("Solde Initial CP", 0.0)), step=0.5)
 
-initial_val = float(compteurs_saved.get("Solde Initial CP", 0.0))
-cp_initial_stock = st.sidebar.number_input("Solde CP initial (Report N-1)", min_value=0.0, value=initial_val, step=0.5)
-
-if st.sidebar.button("💾 Sauvegarder la config CP dans Google Sheets"):
+if st.sidebar.button("💾 Sauvegarder la config CP"):
     df_c = pd.DataFrame([
         {"Indicateur": "Solde Initial CP", "Valeur": cp_initial_stock},
         {"Indicateur": "Mode CP", "Valeur": mode_cp}
     ])
     try:
         conn.update(worksheet=WS_COMPTEURS, data=df_c)
-        st.sidebar.success("✅ Configuration sauvegardée dans Google Sheets !")
+        st.sidebar.success("✅ Configuration enregistrée dans Google Sheets !")
     except Exception as e:
         st.sidebar.error(f"Erreur : {e}")
 
 # ==============================================================================
-# MENU 1 : SAISIE SEMAINE
+# MENU 1 : SAISIE & POINTAGE RAPIDE (SYNCHRONISÉ)
 # ==============================================================================
-if menu == "⚡ Saisie Semaine":
-    st.subheader("⚡ Saisie rapide du Lundi au Vendredi")
+if menu == "⚡ Saisie & Pointage Rapide":
+    st.subheader("⏱️ Pointage Rapide en Direct (1-Clic)")
     today = datetime.date.today()
+    now_str = datetime.datetime.now().strftime("%H:%M")
+    today_str = today.strftime("%Y-%m-%d")
+    
+    # 1. Charger l'historique existant depuis Google Sheets pour synchroniser
+    try:
+        df_existing = conn.read(worksheet=WS_POINTAGES, ttl="0")
+        if df_existing is None:
+            df_existing = pd.DataFrame()
+    except Exception:
+        df_existing = pd.DataFrame()
+
+    # Recherche si aujourd'hui est déjà pointé
+    row_today = None
+    if not df_existing.empty and "Date" in df_existing.columns:
+        match = df_existing[df_existing["Date"].astype(str) == today_str]
+        if not match.empty:
+            row_today = match.iloc[0]
+
+    col_p1, col_p2, col_p3 = st.columns([2, 2, 3])
+    with col_p1:
+        st.info(f"📅 **Aujourd'hui :** {today.strftime('%d/%m/%Y')}\n\n⏰ **Heure actuelle :** {now_str}")
+    
+    with col_p2:
+        if row_today is not None:
+            arr_t = row_today.get("Heure Arrivée", "--:--")
+            dep_t = row_today.get("Heure Départ", "--:--")
+            st.warning(f"📌 **Pointage du jour :**\n* Arrivée : `{arr_t}`\n* Départ : `{dep_t}`")
+        else:
+            st.write("⚪ Aucun pointage aujourd'hui.")
+
+    with col_p3:
+        st.write("**Actions rapides :**")
+        btn_arr, btn_dep = st.columns(2)
+        
+        # Bouton Pointer Arrivée
+        if btn_arr.button("🟢 Pointer Arrivée", use_container_width=True):
+            new_row = {
+                "Date": today_str,
+                "Heure Arrivée": now_str,
+                "Heure Départ": row_today.get("Heure Départ", "00:00") if row_today is not None else "00:00",
+                "Pause (H)": row_today.get("Pause (H)", 1.0) if row_today is not None else 1.0,
+                "Durée Travaillée": 0.0,
+                "H. Supp": 0.0,
+                "Commentaire": row_today.get("Commentaire", "") if row_today is not None else "Pointage direct"
+            }
+            # Calcul si départ déjà renseigné
+            w, ot = calculate_worked_hours(new_row["Heure Arrivée"], new_row["Heure Départ"], new_row["Pause (H)"])
+            new_row["Durée Travaillée"], new_row["H. Supp"] = w, ot
+            
+            # Mise à jour Google Sheets
+            if not df_existing.empty and "Date" in df_existing.columns:
+                df_updated = pd.concat([df_existing[df_existing["Date"].astype(str) != today_str], pd.DataFrame([new_row])], ignore_index=True)
+            else:
+                df_updated = pd.DataFrame([new_row])
+                
+            conn.update(worksheet=WS_POINTAGES, data=df_updated)
+            st.success(f"✅ Arrivée enregistrée à {now_str} !")
+            st.rerun()
+
+        # Bouton Pointer Départ
+        if btn_dep.button("🔴 Pointer Départ", use_container_width=True):
+            arr_val = row_today.get("Heure Arrivée", "08:30") if row_today is not None else "08:30"
+            pause_val = row_today.get("Pause (H)", 1.0) if row_today is not None else 1.0
+            com_val = row_today.get("Commentaire", "") if row_today is not None else "Pointage direct"
+            
+            w, ot = calculate_worked_hours(arr_val, now_str, pause_val)
+            new_row = {
+                "Date": today_str,
+                "Heure Arrivée": arr_val,
+                "Heure Départ": now_str,
+                "Pause (H)": pause_val,
+                "Durée Travaillée": w,
+                "H. Supp": ot,
+                "Commentaire": com_val
+            }
+            if not df_existing.empty and "Date" in df_existing.columns:
+                df_updated = pd.concat([df_existing[df_existing["Date"].astype(str) != today_str], pd.DataFrame([new_row])], ignore_index=True)
+            else:
+                df_updated = pd.DataFrame([new_row])
+                
+            conn.update(worksheet=WS_POINTAGES, data=df_updated)
+            st.success(f"✅ Départ enregistré à {now_str} ({w}h travaillées, +{ot}h sup) !")
+            st.rerun()
+
+    st.markdown("---")
+    st.subheader("🗓️ Grille de Saisie Hebdomadaire (Synchronisée avec Google Sheets)")
+    
+    # 2. Pré-remplissage automatique des données existantes
     monday = today - timedelta(days=today.weekday())
     days = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi"]
     holidays = get_french_holidays(today.year)
     
+    # Dictionnaire de recherche rapide par date
+    existing_dict = {}
+    if not df_existing.empty and "Date" in df_existing.columns:
+        for _, r in df_existing.iterrows():
+            existing_dict[str(r["Date"])] = r
+
     with st.form("form_semaine"):
         cols_hdr = st.columns([1.5, 2, 2, 2, 1.5, 3])
         cols_hdr[0].write("**Jour**")
@@ -147,18 +249,27 @@ if menu == "⚡ Saisie Semaine":
         entries = []
         for i, day_name in enumerate(days):
             d_date = monday + timedelta(days=i)
+            d_date_str = d_date.strftime("%Y-%m-%d")
             is_ferie = d_date in holidays
             nom_ferie = holidays.get(d_date, "")
             
+            # Récupération des données existantes si le jour a déjà été saisi
+            saved_day = existing_dict.get(d_date_str, None)
+            
+            if saved_day is not None:
+                def_arr = str_to_time(saved_day.get("Heure Arrivée"), datetime.time(8, 30))
+                def_dep = str_to_time(saved_day.get("Heure Départ"), datetime.time(16, 30))
+                def_pause = float(saved_day.get("Pause (H)", 1.0))
+                def_com = str(saved_day.get("Commentaire", "")) if not pd.isna(saved_day.get("Commentaire")) else ""
+            else:
+                def_arr = datetime.time(0, 0) if is_ferie else datetime.time(8, 30)
+                def_dep = datetime.time(0, 0) if is_ferie else datetime.time(16, 30)
+                def_pause = 0.0 if is_ferie else 1.0
+                def_com = f"🎉 Férié : {nom_ferie}" if is_ferie else ""
+
             c = st.columns([1.5, 2, 2, 2, 1.5, 3])
             c[0].write(f"**{day_name}** 🇫🇷" if is_ferie else f"**{day_name}**")
             dt = c[1].date_input(f"date_{i}", value=d_date, label_visibility="collapsed")
-            
-            def_arr = datetime.time(0, 0) if is_ferie else datetime.time(8, 30)
-            def_dep = datetime.time(0, 0) if is_ferie else datetime.time(16, 30)
-            def_pause = 0.0 if is_ferie else 1.0
-            def_com = f"🎉 Férié : {nom_ferie}" if is_ferie else ""
-            
             arr = c[2].time_input(f"arr_{i}", value=def_arr, label_visibility="collapsed")
             dep = c[3].time_input(f"dep_{i}", value=def_dep, label_visibility="collapsed")
             pause = c[4].number_input(f"pause_{i}", value=def_pause, step=0.5, label_visibility="collapsed")
@@ -166,8 +277,7 @@ if menu == "⚡ Saisie Semaine":
             
             arr_str = arr.strftime("%H:%M")
             dep_str = dep.strftime("%H:%M")
-            
-            worked, overtime = calculate_worked_hours(arr_str, dep_str, pause) if not (is_ferie and arr_str == "00:00" and dep_str == "00:00") else (0.0, 0.0)
+            worked, overtime = calculate_worked_hours(arr_str, dep_str, pause)
             
             entries.append({
                 "Date": dt.strftime("%Y-%m-%d"),
@@ -182,22 +292,17 @@ if menu == "⚡ Saisie Semaine":
         submitted = st.form_submit_button("💾 Enregistrer la semaine dans Google Sheets")
         if submitted:
             try:
-                try:
-                    existing_df = conn.read(worksheet=WS_POINTAGES, ttl="0")
-                except Exception:
-                    existing_df = pd.DataFrame()
-
                 new_df = pd.DataFrame(entries)
-                if existing_df is None or existing_df.empty:
+                if df_existing.empty or "Date" not in df_existing.columns:
                     updated_df = new_df
                 else:
                     dates_to_add = set(new_df["Date"].astype(str))
-                    if "Date" in existing_df.columns:
-                        existing_df = existing_df[~existing_df["Date"].astype(str).isin(dates_to_add)]
-                    updated_df = pd.concat([existing_df, new_df], ignore_index=True)
+                    filtered_existing = df_existing[~df_existing["Date"].astype(str).isin(dates_to_add)]
+                    updated_df = pd.concat([filtered_existing, new_df], ignore_index=True)
                 
                 conn.update(worksheet=WS_POINTAGES, data=updated_df)
-                st.success("✅ Semaine enregistrée !")
+                st.success("✅ La semaine a été enregistrée avec succès dans Google Sheets !")
+                st.rerun()
             except Exception as e:
                 st.error(f"❌ Erreur : {e}")
 
@@ -275,7 +380,6 @@ elif menu == "📊 Historique & Compteurs":
     solde_h_sup = tot_overtime_gained - tot_overtime_used
     total_cp_available = cp_initial_stock + cp_earned_this_period - tot_cp_used
 
-    # Mise à jour automatique des soldes finaux calculés dans Google Sheets
     if st.button("🔄 Synchroniser & Écrire les soldes dans Google Sheets"):
         df_compteurs_update = pd.DataFrame([
             {"Indicateur": "Solde Initial CP", "Valeur": cp_initial_stock},
@@ -290,7 +394,7 @@ elif menu == "📊 Historique & Compteurs":
         ])
         try:
             conn.update(worksheet=WS_COMPTEURS, data=df_compteurs_update)
-            st.success("✅ L'onglet 'Compteurs' de Google Sheets à été mis à jour avec succès !")
+            st.success("✅ L'onglet 'Compteurs' de Google Sheets à été mis à jour !")
         except Exception as e:
             st.error(f"❌ Erreur lors de l'écriture : {e}")
 
