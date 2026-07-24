@@ -139,8 +139,11 @@ if st.sidebar.button("💾 Sauvegarder la config CP"):
 # ==============================================================================
 if menu == "⚡ Saisie & Pointage Rapide":
     st.subheader("⏱️ Pointage Rapide en Direct (1-Clic)")
-    today = datetime.date.today()
-    now_str = datetime.datetime.now().strftime("%H:%M")
+    tz_paris = ZoneInfo("Europe/Paris")
+    now_paris = datetime.datetime.now(tz_paris)
+
+    today = now_paris.date()
+    now_str = now_paris.strftime("%H:%M")
     today_str = today.strftime("%Y-%m-%d")
     
     # 1. Charger l'historique existant depuis Google Sheets pour synchroniser
